@@ -6,9 +6,8 @@ defmodule RawAudioParserTest do
 
   import Membrane.Testing.Assertions
 
-  alias Membrane.RawAudioParser
+  alias Membrane.{Buffer, RawAudio, RawAudioParser, Time}
   alias Membrane.Testing.{Pipeline, Sink, Source}
-  alias Membrane.{Buffer, RawAudio, Time}
 
   @stream_format %RawAudio{
     channels: 2,

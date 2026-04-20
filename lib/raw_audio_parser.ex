@@ -7,8 +7,8 @@ defmodule Membrane.RawAudioParser do
 
   use Membrane.Filter
 
+  alias Membrane.RawAudio
   alias Membrane.RemoteStream
-  alias Membrane.{Buffer, RawAudio}
 
   def_options stream_format: [
                 spec: RawAudio.t() | nil,
@@ -98,7 +98,7 @@ defmodule Membrane.RawAudioParser do
     if parsed_payload == <<>> do
       {[], state}
     else
-      parsed_buffer = %Buffer{buffer | payload: parsed_payload}
+      parsed_buffer = %{buffer | payload: parsed_payload}
 
       {parsed_buffer, state} =
         if overwrite_pts?, do: overwrite_pts(parsed_buffer, state), else: {parsed_buffer, state}
