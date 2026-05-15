@@ -84,7 +84,7 @@ defmodule Membrane.RawAudioParser do
   end
 
   @impl true
-  def handle_buffer(_pad, buffer, _context, state) do
+  def handle_buffer(_pad, %Membrane.Buffer{} = buffer, _context, state) do
     %{stream_format: stream_format, overwrite_pts?: overwrite_pts?} = state
 
     payload = state.acc <> buffer.payload
@@ -98,7 +98,7 @@ defmodule Membrane.RawAudioParser do
     if parsed_payload == <<>> do
       {[], state}
     else
-      parsed_buffer = %{buffer | payload: parsed_payload}
+      parsed_buffer = %Membrane.Buffer{buffer | payload: parsed_payload}
 
       {parsed_buffer, state} =
         if overwrite_pts?, do: overwrite_pts(parsed_buffer, state), else: {parsed_buffer, state}
