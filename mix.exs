@@ -1,7 +1,7 @@
 defmodule Membrane.RawAudioParser.Mixfile do
   use Mix.Project
 
-  @version "0.4.0"
+  @version "0.4.1"
   @github_url "https://github.com/membraneframework/membrane_raw_audio_parser_plugin"
 
   def project do
@@ -53,6 +53,7 @@ defmodule Membrane.RawAudioParser.Mixfile do
 
     if System.get_env("CI") == "true" do
       # Store PLTs in cacheable directory for CI
+      File.mkdir_p!(Path.join([__DIR__, "priv", "plts"]))
       [plt_local_path: "priv/plts", plt_core_path: "priv/plts"] ++ opts
     else
       opts
