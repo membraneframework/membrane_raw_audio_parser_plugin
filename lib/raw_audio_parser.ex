@@ -31,6 +31,13 @@ defmodule Membrane.RawAudioParser do
                 It's only valid when `overwrite_pts?` is set to true.
                 """,
                 default: 0
+              ],
+              chunk_duration: [
+                spec: Membrane.Time.t() | nil,
+                description: """
+                  TODO __jm__
+                """,
+                default: nil
               ]
 
   def_input_pad :input,
@@ -54,12 +61,55 @@ defmodule Membrane.RawAudioParser do
       |> Map.from_struct()
       |> Map.put(:next_pts, options.pts_offset)
       |> Map.put(:acc, <<>>)
+      |> Map.put(:chunk_size, nil)
 
     {[], state}
   end
 
   @impl true
-  def handle_stream_format(_pad, input_stream_format, _context, state) do
+  def handle_stream_format(
+        _pad,
+        input_stream_format,
+        _context,
+        %{chunk_duration: chunk_duration} = state
+      ) do
+    {resolved_sf, state} = resolve_stream_format(input_stream_format, state)
+
+    chunk_size =
+      if is_nil(chunk_duration),
+        do: nil,
+        else: RawAudio.time_to_bytes(chunk_duration, resolved_sf)
+
+    {[stream_format: {:output, resolved_sf}], %{state | chunk_size: chunk_size}}
+  end
+
+  @impl true
+  def handle_buffer(
+        _pad,
+        %Membrane.Buffer{payload: payload} = buffer,
+        _context,
+        %{stream_format: stream_format, chunk_size: chunk_size, acc: acc} = state
+      ) do
+    payload = acc <> payload
+    sample_size = RawAudio.sample_size(stream_format) * stream_format.channels
+
+    acc_size = rem(byte_size(payload), max(sample_size, chunk_size || 0))
+    aligned_payload_bytes = byte_size(payload) - acc_size
+
+    <<aligned_payload::binary-size(^aligned_payload_bytes), acc::binary-size(^acc_size)>> =
+      payload
+
+    state = %{state | acc: acc}
+
+    if aligned_payload == <<>> do
+      {[], state}
+    else
+      chunk_buffers(buffer, aligned_payload, state)
+    end
+  end
+
+  @spec resolve_stream_format(struct(), map()) :: {struct(), map()}
+  defp resolve_stream_format(input_stream_format, state) do
     case {input_stream_format, state.stream_format} do
       {%RemoteStream{}, nil} ->
         raise """
@@ -67,14 +117,13 @@ defmodule Membrane.RawAudioParser do
         """
 
       {_input_format, nil} ->
-        {[stream_format: {:output, input_stream_format}],
-         %{state | stream_format: input_stream_format}}
+        {input_stream_format, %{state | stream_format: input_stream_format}}
 
       {%RemoteStream{}, stream_format} ->
-        {[stream_format: {:output, stream_format}], state}
+        {stream_format, state}
 
       {stream_format, stream_format} ->
-        {[stream_format: {:output, stream_format}], state}
+        {stream_format, state}
 
       _else ->
         raise """
@@ -83,35 +132,44 @@ defmodule Membrane.RawAudioParser do
     end
   end
 
-  @impl true
-  def handle_buffer(_pad, %Membrane.Buffer{} = buffer, _context, state) do
-    %{stream_format: stream_format, overwrite_pts?: overwrite_pts?} = state
+  defp chunk_buffers(
+         buffer,
+         aligned_payload,
+         %{
+           overwrite_pts?: overwrite_pts?,
+           chunk_size: chunk_size,
+           next_pts: next_pts
+         } =
+           state
+       ) do
+    chunked_buffers =
+      aligned_payload
+      |> chunk_payload(chunk_size)
+      |> Enum.map(&%{buffer | payload: &1})
 
-    payload = state.acc <> buffer.payload
-    sample_size = RawAudio.sample_size(stream_format) * stream_format.channels
+    {buffers, state} =
+      if overwrite_pts? do
+        duration = chunked_buffers |> hd() |> then(& &1.payload) |> byte_size()
 
-    parsed_payload_bytes = byte_size(payload) - rem(byte_size(payload), sample_size)
+        timestamps = Stream.iterate(next_pts, fn pts -> pts + duration end)
 
-    <<parsed_payload::binary-size(parsed_payload_bytes), acc::binary>> = payload
-    state = %{state | acc: acc}
+        buffers =
+          Enum.zip_with(chunked_buffers, timestamps, fn %Membrane.Buffer{} = buffer, pts ->
+            %{buffer | pts: pts}
+          end)
 
-    if parsed_payload == <<>> do
-      {[], state}
-    else
-      parsed_buffer = %Membrane.Buffer{buffer | payload: parsed_payload}
+        {buffers, %{state | next_pts: next_pts + duration * length(buffers)}}
+      else
+        {chunked_buffers, state}
+      end
 
-      {parsed_buffer, state} =
-        if overwrite_pts?, do: overwrite_pts(parsed_buffer, state), else: {parsed_buffer, state}
-
-      {[buffer: {:output, parsed_buffer}], state}
-    end
+    {[buffer: {:output, buffers}], state}
   end
 
-  defp overwrite_pts(
-         %{payload: payload} = buffer,
-         %{next_pts: next_pts, stream_format: stream_format} = state
-       ) do
-    duration = RawAudio.bytes_to_time(byte_size(payload), stream_format)
-    {%{buffer | pts: next_pts}, %{state | next_pts: next_pts + duration}}
+  @spec chunk_payload(binary(), nil | pos_integer()) :: [binary()]
+  defp chunk_payload(payload, nil), do: [payload]
+
+  defp chunk_payload(payload, chunk_size) do
+    for <<chunk::size(^chunk_size) <- payload>>, do: <<chunk::size(chunk_size)>>
   end
 end
