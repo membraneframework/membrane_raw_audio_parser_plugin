@@ -20,7 +20,7 @@ defmodule RawAudioParserTest do
 
   test "parser divides payloads into samples" do
     payload_bytes = div(byte_size(@silence), 2)
-    <<payload::binary-size(payload_bytes), _rest::binary>> = @silence
+    <<payload::binary-size(^payload_bytes), _rest::binary>> = @silence
 
     buffers = for _i <- 1..9, do: payload
 
@@ -35,7 +35,7 @@ defmodule RawAudioParserTest do
 
     extended_payload = RawAudio.silence(@stream_format, div(@silence_duration, 2))
 
-    <<^extended_payload::binary-size(byte_size(extended_payload)), truncated_payload::binary>> =
+    <<^extended_payload::binary-size(byte_size(^extended_payload)), truncated_payload::binary>> =
       @silence
 
     # Each buffer that Parser gets has some amount of whole samples and half of the sample at the end.
