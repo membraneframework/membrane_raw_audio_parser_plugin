@@ -138,7 +138,8 @@ defmodule Membrane.RawAudioParser do
          %{
            overwrite_pts?: overwrite_pts?,
            chunk_size: chunk_size,
-           next_pts: next_pts
+           next_pts: next_pts,
+           stream_format: stream_format
          } =
            state
        ) do
@@ -149,7 +150,12 @@ defmodule Membrane.RawAudioParser do
 
     {buffers, state} =
       if overwrite_pts? do
-        duration = chunked_buffers |> hd() |> then(& &1.payload) |> byte_size()
+        duration =
+          chunked_buffers
+          |> hd()
+          |> then(& &1.payload)
+          |> byte_size()
+          |> RawAudio.bytes_to_time(stream_format)
 
         timestamps = Stream.iterate(next_pts, fn pts -> pts + duration end)
 
