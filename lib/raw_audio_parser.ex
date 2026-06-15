@@ -14,63 +14,26 @@ defmodule Membrane.RawAudioParser do
 
   alias Membrane.{Buffer, RawAudio, RemoteStream}
 
-  defmodule State do
-    @moduledoc false
-
-    @type t :: %__MODULE__{
-            stream_format: RawAudio.t() | nil,
-            overwrite_pts?: boolean(),
-            pts_offset: non_neg_integer(),
-            chunk_duration: Membrane.Time.t() | nil,
-            metadata_placement_strategy: :first_buffer_only | :repeat_in_chunks,
-            # The pts the next emitted output buffer should carry (generated in overwrite
-            # mode, or remembered from the input in passthrough mode). May be `nil` until
-            # the first timestamp is known.
-            next_pts: Membrane.Time.t() | nil,
-            # Bytes that didn't fill a whole alignment unit yet, carried to the next buffer.
-            acc: binary(),
-            # Size of a single frame in bytes; resolved once the stream format is known.
-            frame_size: pos_integer() | nil,
-            # Size of a single chunk in bytes; `nil` when chunking is disabled.
-            chunk_size: pos_integer() | nil,
-            # Metadata of the most recently emitted input buffer, used to tag chunks that
-            # start with leftover bytes from the previous input buffer.
-            last_metadata: Buffer.metadata()
-          }
-
-    defstruct [
-      :stream_format,
-      :overwrite_pts?,
-      :pts_offset,
-      :chunk_duration,
-      :metadata_placement_strategy,
-      :next_pts,
-      :frame_size,
-      :chunk_size,
-      acc: <<>>,
-      last_metadata: %{}
-    ]
-  end
-
   def_options stream_format: [
                 spec: RawAudio.t() | nil,
                 description: """
-                The value defines a raw audio format of the input pad.
+                Defines a raw audio format of the input pad.
                 """,
                 default: nil
               ],
               overwrite_pts?: [
                 spec: boolean(),
                 description: """
-                If set to true RawAudioParser will add timestamps based on payload duration
+                If set to true, RawAudioParser will add timestamps based on payload duration.
                 """,
                 default: false
               ],
               pts_offset: [
                 spec: non_neg_integer(),
                 description: """
-                If set to value different than 0, RawAudioParser will start timestamps from offset.
-                It's only valid when `overwrite_pts?` is set to true.
+                If set to a value different than 0,
+                RawAudioParser will start timestamps from this offset.
+                Only valid when `overwrite_pts?` is set to true.
                 """,
                 default: 0
               ],
@@ -93,7 +56,7 @@ defmodule Membrane.RawAudioParser do
                 Controls how the metadata of an input buffer is propagated to the chunks
                 produced from it. Only relevant when `chunk_duration` is set.
 
-                - `:first_buffer_only` (default) - within a single emitted batch only the
+                - `:first_buffer_only` - within a single emitted batch only the
                   first chunk carries metadata; the remaining chunks have empty metadata.
                 - `:repeat_in_chunks` - every produced chunk carries the metadata of the
                   input buffer it originates from.
@@ -105,7 +68,7 @@ defmodule Membrane.RawAudioParser do
     flow_control: :auto,
     accepted_format:
       any_of(
-        RawAudio,
+        Membrane.RawAudio,
         Membrane.RemoteStream
       ),
     availability: :always
@@ -113,7 +76,44 @@ defmodule Membrane.RawAudioParser do
   def_output_pad :output,
     flow_control: :auto,
     availability: :always,
-    accepted_format: RawAudio
+    accepted_format: Membrane.RawAudio
+
+  defmodule State do
+    @moduledoc false
+
+    @type t :: %__MODULE__{
+            stream_format: RawAudio.t() | nil,
+            overwrite_pts?: boolean(),
+            pts_offset: non_neg_integer(),
+            chunk_duration: Membrane.Time.t() | nil,
+            metadata_placement_strategy: :first_buffer_only | :repeat_in_chunks,
+            # The pts the next emitted output buffer should carry
+            # (generated in overwrite mode, or remembered from the input in passthrough mode).
+            # May be `nil` until the first timestamp is known.
+            next_pts: Membrane.Time.t() | nil,
+            # Bytes that didn't fill a whole alignment unit (chunk or frame) yet,
+            # carried to the next buffer.
+            acc: binary(),
+            frame_size: pos_integer() | nil,
+            chunk_size: pos_integer() | nil,
+            # Metadata of the most recently emitted input buffer, used to tag chunks that
+            # start with leftover bytes from the previous input buffer.
+            last_metadata: Buffer.metadata()
+          }
+
+    defstruct [
+      :stream_format,
+      :overwrite_pts?,
+      :pts_offset,
+      :chunk_duration,
+      :metadata_placement_strategy,
+      :next_pts,
+      :frame_size,
+      :chunk_size,
+      acc: <<>>,
+      last_metadata: %{}
+    ]
+  end
 
   @impl true
   def handle_init(_ctx, options) do
@@ -145,8 +145,6 @@ defmodule Membrane.RawAudioParser do
 
   @impl true
   def handle_buffer(:input, %Buffer{payload: payload} = buffer, _ctx, state) do
-    # A "run" is a maximal sequence of input buffers whose data accumulates without a
-    # gap; `fresh_run?` tells us whether this buffer begins one (acc was empty).
     fresh_run? = state.acc == <<>>
     {aligned, leftover} = take_aligned(state.acc <> payload, state)
     state = %{state | acc: leftover}
@@ -171,14 +169,13 @@ defmodule Membrane.RawAudioParser do
     do: {[end_of_stream: :output], state}
 
   @impl true
+  def handle_end_of_stream(:input, _ctx, state) when byte_size(state.acc) < state.frame_size,
+    do: {[end_of_stream: :output], state}
+
+  @impl true
   def handle_end_of_stream(:input, _ctx, state) do
-    # Flush the trailing remainder, but only if it amounts to at least one whole sample.
-    if byte_size(state.acc) >= state.frame_size do
-      remainder = %Buffer{payload: state.acc, pts: state.next_pts, metadata: state.last_metadata}
-      {[buffer: {:output, remainder}, end_of_stream: :output], %{state | acc: <<>>}}
-    else
-      {[end_of_stream: :output], state}
-    end
+    remainder = %Buffer{payload: state.acc, pts: state.next_pts, metadata: state.last_metadata}
+    {[buffer: {:output, remainder}, end_of_stream: :output], %{state | acc: <<>>}}
   end
 
   @spec take_aligned(binary(), State.t()) :: {binary(), binary()}
@@ -222,11 +219,8 @@ defmodule Membrane.RawAudioParser do
   end
 
   @spec split_into_chunks(binary(), pos_integer()) :: [Buffer.t()]
-  defp split_into_chunks(<<>>, _chunk_size), do: []
-
   defp split_into_chunks(payload, chunk_size) do
-    <<chunk::binary-size(^chunk_size), rest::binary>> = payload
-    [%Buffer{payload: chunk} | split_into_chunks(rest, chunk_size)]
+    for <<chunk::binary-size(^chunk_size) <- payload>>, do: %Buffer{payload: chunk}
   end
 
   # The first chunk of a batch inherits the metadata of the input buffer that owns its
@@ -234,7 +228,7 @@ defmodule Membrane.RawAudioParser do
   # previous input buffer (whose leftover bytes spilled over into this batch).
   @spec tag_metadata([Buffer.t()], Buffer.metadata(), boolean(), State.t()) :: [Buffer.t()]
   defp tag_metadata([first | rest], input_metadata, fresh_run?, state) do
-    first_metadata = if fresh_run?, do: input_metadata, else: state.last_metadata
+    first = %{first | metadata: if(fresh_run?, do: input_metadata, else: state.last_metadata)}
 
     rest =
       case state.metadata_placement_strategy do
@@ -242,20 +236,17 @@ defmodule Membrane.RawAudioParser do
         :repeat_in_chunks -> Enum.map(rest, &%{&1 | metadata: input_metadata})
       end
 
-    [%{first | metadata: first_metadata} | rest]
+    [first | rest]
   end
 
-  # Assigns monotonically increasing pts to the chunks, starting from the timestamp the
-  # first chunk should carry. When pts is unknown (nil) chunks are emitted without one.
   @spec stamp_pts([Buffer.t()], Membrane.Time.t() | nil, boolean(), State.t()) ::
           {[Buffer.t()], State.t()}
   defp stamp_pts(chunks, input_pts, fresh_run?, state) do
     start_pts =
-      cond do
-        # In overwrite mode pts are generated, in a continuation we keep counting from
-        # the run's start; only a fresh passthrough run takes the input buffer's pts.
-        state.overwrite_pts? or not fresh_run? -> state.next_pts
-        true -> input_pts
+      if state.overwrite_pts? or not fresh_run? do
+        state.next_pts
+      else
+        input_pts
       end
 
     case start_pts do

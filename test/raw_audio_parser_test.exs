@@ -382,7 +382,8 @@ defmodule RawAudioParserTest do
       @silence_10ms
 
     # Each buffer that Parser gets has some amount of whole samples and half of the sample at the end.
-    # Half of the buffers should be truncated and half of them will be extended by truncated part from the previous buffer.
+    # Half of the buffers should be truncated
+    # and half of them will be extended by truncated part from the previous buffer.
     # This is because Parser ensures that all buffers have only whole samples.
     for _i <- 1..5,
         do: assert_sink_buffer(pipeline, :sink, %Buffer{pts: nil, payload: ^truncated_payload})
