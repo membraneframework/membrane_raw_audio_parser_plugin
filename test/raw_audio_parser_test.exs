@@ -88,9 +88,11 @@ defmodule RawAudioParserTest do
   test "parser merges payloads into chunks of `chunk_duration`" do
     chunk_duration = Time.milliseconds(50)
     # 10 buffers of 10 ms each -> 100 ms of audio total
+    silence = @silence
+    silence_duration = @silence_duration
     buffers =
       Stream.unfold(Time.milliseconds(0), fn pts ->
-        {%Membrane.Buffer{payload: @silence, pts: pts}, pts + @silence_duration}
+        {%Membrane.Buffer{payload: silence, pts: pts}, pts + silence_duration}
       end)
       |> Stream.take(10)
 
@@ -110,7 +112,7 @@ defmodule RawAudioParserTest do
     IO.inspect(byte_size(chunk))
 
     # 100 ms repackaged into 50 ms chunks -> exactly 2 buffers, no remainder
-    for i <- 1..2 do
+    for i <- 0..1 do
       pts = i * chunk_duration
       assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^chunk, pts: ^pts})
     end
@@ -136,8 +138,10 @@ defmodule RawAudioParserTest do
     chunk = RawAudio.silence(@stream_format, chunk_duration)
 
     # 100 ms split into 10 ms chunks -> exactly 10 buffers, no remainder
-    for _i <- 1..10,
-        do: assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^chunk})
+    for i <- 0..9 do
+      pts = i * Time.milliseconds(10)
+      assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^chunk, pts: ^pts})
+    end
 
     refute_sink_buffer(pipeline, :sink, _buffer, 0)
   end
