@@ -98,21 +98,26 @@ defmodule RawAudioParserTest do
     end
 
     test "parser merges payloads into chunks of `chunk_duration`" do
+      offset = 10
       chunk_duration = Time.milliseconds(50)
 
       pipeline =
         run_test_pipeline(
           %RawAudioParser{chunk_duration: chunk_duration, overwrite_pts?: false},
           10,
-          Time.milliseconds(10)
+          Time.milliseconds(10),
+          offset
         )
 
       chunk = RawAudio.silence(@stream_format, chunk_duration)
 
-      for _i <- 0..1 do
+      for i <- 0..1 do
+        offset = 10
+        pts = i * chunk_duration + offset
+
         assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{
-          payload: ^chunk,
-          pts: nil
+          pts: ^pts,
+          payload: ^chunk
         })
       end
 
@@ -144,19 +149,22 @@ defmodule RawAudioParserTest do
     end
 
     test "parser splits payloads into chunks of `chunk_duration`" do
+      offset = 10
       chunk_duration = Time.milliseconds(20)
 
       pipeline =
         run_test_pipeline(
           %RawAudioParser{chunk_duration: chunk_duration, overwrite_pts?: false},
           2,
-          Time.milliseconds(50)
+          Time.milliseconds(50),
+          offset
         )
 
       chunk = RawAudio.silence(@stream_format, chunk_duration)
 
-      for _i <- 0..4 do
-        assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^chunk, pts: nil})
+      for i <- 0..4 do
+        pts = i * chunk_duration + offset
+        assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^chunk, pts: ^pts})
       end
 
       refute_sink_buffer(pipeline, :sink, _buffer, 0)
@@ -271,7 +279,7 @@ defmodule RawAudioParserTest do
         %RawAudioParser{
           chunk_duration: chunk_duration,
           overwrite_pts?: true,
-          metadata_placement_strategy: :first_buffer_only
+          metadata_placement_strategy: :repeat_in_chunks
         },
         5,
         Time.milliseconds(30)
@@ -279,9 +287,9 @@ defmodule RawAudioParserTest do
 
     chunk = RawAudio.silence(@stream_format, chunk_duration)
 
-    for i <- 0..9 do
+    for i <- 0..6 do
       pts = i * chunk_duration
-      metadata = %{index: div(i, 2)}
+      metadata = %{index: div(2 * i, 3)}
 
       assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{
         payload: ^chunk,
@@ -289,6 +297,16 @@ defmodule RawAudioParserTest do
         metadata: ^metadata
       })
     end
+
+    pts = 7 * chunk_duration
+    metadata = %{index: 4}
+    chunk = RawAudio.silence(@stream_format, Time.milliseconds(10))
+
+    assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{
+      payload: ^chunk,
+      pts: ^pts,
+      metadata: ^metadata
+    })
 
     refute_sink_buffer(pipeline, :sink, _buffer, 0)
   end
