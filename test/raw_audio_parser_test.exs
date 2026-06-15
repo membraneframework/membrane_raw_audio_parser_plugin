@@ -19,28 +19,26 @@ defmodule RawAudioParserTest do
 
   describe "for sample-aligned streams" do
     defp run_test_pipeline(
-           %Membrane.RawAudioParser{} = parser_spec,
+           %RawAudioParser{} = parser_spec,
            input_count,
            input_duration,
            init_pts \\ nil
          ) do
       buffers =
-        Stream.unfold({init_pts, 0}, fn {pts, index} ->
-          buffer = %Membrane.Buffer{
-            payload: RawAudio.silence(@stream_format, input_duration),
-            pts: pts,
-            metadata: %{index: index}
-          }
-
-          next_pts =
-            case pts do
+        0..(input_count - 1)//1
+        |> Stream.map(fn i ->
+          pts =
+            case init_pts do
               nil -> nil
-              _pts -> pts + input_duration
+              _init_pts -> init_pts + i * input_duration
             end
 
-          {buffer, {next_pts, index + 1}}
+          %Buffer{
+            payload: RawAudio.silence(@stream_format, input_duration),
+            pts: pts,
+            metadata: %{index: i}
+          }
         end)
-        |> Stream.take(input_count)
 
       spec = [
         child(:source, %Source{
@@ -115,7 +113,7 @@ defmodule RawAudioParserTest do
         offset = 10
         pts = i * chunk_duration + offset
 
-        assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{
+        assert_sink_buffer(pipeline, :sink, %Buffer{
           pts: ^pts,
           payload: ^chunk
         })
@@ -139,7 +137,7 @@ defmodule RawAudioParserTest do
       for i <- 0..1 do
         pts = i * chunk_duration
 
-        assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{
+        assert_sink_buffer(pipeline, :sink, %Buffer{
           payload: ^chunk,
           pts: ^pts
         })
@@ -260,7 +258,7 @@ defmodule RawAudioParserTest do
         pts = i * chunk_duration
         metadata = %{index: div(i, 2)}
 
-        assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{
+        assert_sink_buffer(pipeline, :sink, %Buffer{
           payload: ^chunk,
           pts: ^pts,
           metadata: ^metadata
@@ -273,9 +271,6 @@ defmodule RawAudioParserTest do
     test "parser tags only the first chunk of each input buffer with metadata by default" do
       chunk_duration = Time.milliseconds(10)
 
-      # Each 30 ms input buffer is split into three 10 ms chunks. With the default
-      # `:first_buffer_only` strategy only the first chunk of each batch keeps the input
-      # metadata; the remaining chunks are emitted with empty metadata.
       pipeline =
         run_test_pipeline(
           %RawAudioParser{chunk_duration: chunk_duration, overwrite_pts?: true},
@@ -289,7 +284,7 @@ defmodule RawAudioParserTest do
         pts = i * chunk_duration
         metadata = if rem(i, 3) == 0, do: %{index: div(i, 3)}, else: %{}
 
-        assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{
+        assert_sink_buffer(pipeline, :sink, %Buffer{
           payload: ^chunk,
           pts: ^pts,
           metadata: ^metadata
@@ -300,7 +295,7 @@ defmodule RawAudioParserTest do
     end
   end
 
-  test "parser repeats metadata across chunks and carries previous metadata into straddling chunks" do
+  test "parser splits input buffers into chunks and carries over metadata with :repeat_in_chunks strategy" do
     chunk_duration = Time.milliseconds(20)
 
     pipeline =
@@ -320,7 +315,7 @@ defmodule RawAudioParserTest do
       pts = i * chunk_duration
       metadata = %{index: div(2 * i, 3)}
 
-      assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{
+      assert_sink_buffer(pipeline, :sink, %Buffer{
         payload: ^chunk,
         pts: ^pts,
         metadata: ^metadata
@@ -331,7 +326,7 @@ defmodule RawAudioParserTest do
     metadata = %{index: 4}
     chunk = RawAudio.silence(@stream_format, Time.milliseconds(10))
 
-    assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{
+    assert_sink_buffer(pipeline, :sink, %Buffer{
       payload: ^chunk,
       pts: ^pts,
       metadata: ^metadata
@@ -342,9 +337,6 @@ defmodule RawAudioParserTest do
 
   test "parser drops a trailing remainder smaller than one sample at end of stream" do
     chunk_duration = Time.milliseconds(10)
-
-    # 10 ms of audio is a whole number of chunks; the extra 3 bytes are less than one
-    # frame (6 bytes for stereo s24le), so they can't be flushed and must be dropped.
     silence = @silence_10ms
     payload = silence <> <<0, 0, 0>>
 
