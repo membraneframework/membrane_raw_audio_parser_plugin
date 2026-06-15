@@ -2,13 +2,55 @@ defmodule Membrane.RawAudioParser do
   @moduledoc """
   This element is responsible for parsing audio in RawAudio format.
   The Parser ensures that output buffers have whole samples.
-  The parser doesn't ensure that in each output buffer, there will be the same number of samples.
+
+  By default the parser doesn't ensure that each output buffer holds the same
+  number of samples - it only re-aligns buffers to whole samples. When
+  `chunk_duration` is set, the parser additionally re-chunks the stream so that
+  every output buffer carries exactly `chunk_duration` worth of audio (the very
+  last buffer, flushed at end of stream, may be shorter).
   """
 
   use Membrane.Filter
 
-  alias Membrane.RawAudio
-  alias Membrane.RemoteStream
+  alias Membrane.{Buffer, RawAudio, RemoteStream}
+
+  defmodule State do
+    @moduledoc false
+
+    @type t :: %__MODULE__{
+            stream_format: RawAudio.t() | nil,
+            overwrite_pts?: boolean(),
+            pts_offset: non_neg_integer(),
+            chunk_duration: Membrane.Time.t() | nil,
+            metadata_placement_strategy: :first_buffer_only | :repeat_in_chunks,
+            # The pts the next emitted output buffer should carry (generated in overwrite
+            # mode, or remembered from the input in passthrough mode). May be `nil` until
+            # the first timestamp is known.
+            next_pts: Membrane.Time.t() | nil,
+            # Bytes that didn't fill a whole alignment unit yet, carried to the next buffer.
+            acc: binary(),
+            # Size of a single frame in bytes; resolved once the stream format is known.
+            frame_size: pos_integer() | nil,
+            # Size of a single chunk in bytes; `nil` when chunking is disabled.
+            chunk_size: pos_integer() | nil,
+            # Metadata of the most recently emitted input buffer, used to tag chunks that
+            # start with leftover bytes from the previous input buffer.
+            last_metadata: Buffer.metadata()
+          }
+
+    defstruct [
+      :stream_format,
+      :overwrite_pts?,
+      :pts_offset,
+      :chunk_duration,
+      :metadata_placement_strategy,
+      :next_pts,
+      :frame_size,
+      :chunk_size,
+      acc: <<>>,
+      last_metadata: %{}
+    ]
+  end
 
   def_options stream_format: [
                 spec: RawAudio.t() | nil,
@@ -35,14 +77,26 @@ defmodule Membrane.RawAudioParser do
               chunk_duration: [
                 spec: Membrane.Time.t() | nil,
                 description: """
-                  TODO __jm__
+                When set, output buffers are re-chunked so that each one carries exactly
+                `chunk_duration` worth of audio. Bytes that don't fill a whole chunk are
+                buffered until enough data arrives; the trailing remainder is flushed as a
+                (possibly shorter) buffer at end of stream.
+
+                When `nil` (the default) the parser only re-aligns buffers to whole samples
+                and otherwise passes them through unchanged.
                 """,
                 default: nil
               ],
               metadata_placement_strategy: [
                 spec: :first_buffer_only | :repeat_in_chunks,
                 description: """
-                  TODO __jm__
+                Controls how the metadata of an input buffer is propagated to the chunks
+                produced from it. Only relevant when `chunk_duration` is set.
+
+                - `:first_buffer_only` (default) - within a single emitted batch only the
+                  first chunk carries metadata; the remaining chunks have empty metadata.
+                - `:repeat_in_chunks` - every produced chunk carries the metadata of the
+                  input buffer it originates from.
                 """,
                 default: :first_buffer_only
               ]
@@ -63,127 +117,166 @@ defmodule Membrane.RawAudioParser do
 
   @impl true
   def handle_init(_ctx, options) do
-    state =
-      options
-      |> Map.from_struct()
-      |> Map.put(:next_pts, options.pts_offset)
-      |> Map.put(:acc, <<>>)
-      |> Map.put(:chunk_size, nil)
-      |> Map.put(:last_metadata, Map.new())
+    state = %State{
+      stream_format: options.stream_format,
+      overwrite_pts?: options.overwrite_pts?,
+      pts_offset: options.pts_offset,
+      chunk_duration: options.chunk_duration,
+      metadata_placement_strategy: options.metadata_placement_strategy,
+      next_pts: options.pts_offset
+    }
 
     {[], state}
   end
 
   @impl true
-  def handle_stream_format(
-        :input,
-        input_stream_format,
-        _context,
-        %{chunk_duration: chunk_duration} = state
-      ) do
-    {resolved_sf, state} = resolve_stream_format(input_stream_format, state)
+  def handle_stream_format(:input, input_stream_format, _ctx, state) do
+    {stream_format, state} = resolve_stream_format(input_stream_format, state)
+
+    frame_size = RawAudio.frame_size(stream_format)
 
     chunk_size =
-      if is_nil(chunk_duration),
-        do: nil,
-        else: RawAudio.time_to_bytes(chunk_duration, resolved_sf)
+      if state.chunk_duration,
+        do: RawAudio.time_to_bytes(state.chunk_duration, stream_format)
 
-    {[stream_format: {:output, resolved_sf}], %{state | chunk_size: chunk_size}}
+    state = %{state | frame_size: frame_size, chunk_size: chunk_size}
+    {[stream_format: {:output, stream_format}], state}
   end
 
   @impl true
-  def handle_buffer(
-        :input,
-        %Membrane.Buffer{payload: payload, pts: input_pts, metadata: metadata} = buffer,
-        _context,
-        %{
-          stream_format: stream_format,
-          chunk_size: chunk_size,
-          acc: acc,
-          next_pts: next_pts,
-          overwrite_pts?: overwrite_pts?
-        } =
-          state
-      ) do
-    acc_empty? = acc == <<>>
-    payload = acc <> payload
-    sample_size = RawAudio.sample_size(stream_format) * stream_format.channels
-
-    acc_size =
-      rem(byte_size(payload), max(sample_size, chunk_size || 0))
-
-    aligned_payload_bytes = byte_size(payload) - acc_size
-
-    <<aligned_payload::binary-size(^aligned_payload_bytes), acc::binary-size(^acc_size)>> =
-      payload
-
-    state = %{state | acc: acc}
+  def handle_buffer(:input, %Buffer{payload: payload} = buffer, _ctx, state) do
+    # A "run" is a maximal sequence of input buffers whose data accumulates without a
+    # gap; `fresh_run?` tells us whether this buffer begins one (acc was empty).
+    fresh_run? = state.acc == <<>>
+    {aligned, leftover} = take_aligned(state.acc <> payload, state)
+    state = %{state | acc: leftover}
 
     cond do
-      aligned_payload == <<>> ->
-        next_pts =
-          if acc_empty? and not overwrite_pts?, do: input_pts, else: next_pts
+      aligned == <<>> ->
+        {[], remember_run_start(state, buffer, fresh_run?)}
 
-        {[], %{state | next_pts: next_pts}}
-
-      is_nil(chunk_size) ->
-        aligned_buffer = %{buffer | payload: aligned_payload}
-
-        {aligned_buffer, state} =
-          if overwrite_pts? do
-            duration = aligned_payload |> byte_size() |> RawAudio.bytes_to_time(stream_format)
-            {%{aligned_buffer | pts: next_pts}, %{state | next_pts: next_pts + duration}}
-          else
-            {aligned_buffer, state}
-          end
-
-        {[buffer: {:output, aligned_buffer}], state}
+      is_nil(state.chunk_size) ->
+        # no chunking
+        {out, state} = passthrough(buffer, aligned, state)
+        {[buffer: {:output, out}], state}
 
       true ->
-        chunk_buffers(aligned_payload, input_pts, metadata, acc_empty?, state)
+        {chunks, state} = build_chunks(aligned, buffer, fresh_run?, state)
+        {[buffer: {:output, chunks}], state}
     end
   end
 
   @impl true
-  def handle_end_of_stream(:input, _context, %{chunk_size: nil} = state),
+  def handle_end_of_stream(:input, _ctx, %State{chunk_size: nil} = state),
     do: {[end_of_stream: :output], state}
 
   @impl true
-  def handle_end_of_stream(
-        :input,
-        _context,
-        %{
-          acc: acc,
-          chunk_size: chunk_size,
-          next_pts: next_pts,
-          # overwrite_pts?: overwrite_pts?,
-          last_metadata: last_metadata,
-          stream_format: %RawAudio{channels: channels} = stream_format
-        } = state
-      )
-      when not is_nil(chunk_size) do
-    sample_size = RawAudio.sample_size(stream_format) * channels
-    acc_duration = acc |> byte_size() |> RawAudio.bytes_to_time(stream_format)
-
-    if sample_size <= byte_size(acc) do
-      buffer = %Membrane.Buffer{payload: acc, pts: next_pts, metadata: last_metadata}
-
-      next_pts =
-        case next_pts do
-          nil -> nil
-          _next_pts -> next_pts + acc_duration
-        end
-
-      {[
-         buffer: {:output, buffer},
-         end_of_stream: :output
-       ], %{state | next_pts: next_pts}}
+  def handle_end_of_stream(:input, _ctx, state) do
+    # Flush the trailing remainder, but only if it amounts to at least one whole sample.
+    if byte_size(state.acc) >= state.frame_size do
+      remainder = %Buffer{payload: state.acc, pts: state.next_pts, metadata: state.last_metadata}
+      {[buffer: {:output, remainder}, end_of_stream: :output], %{state | acc: <<>>}}
     else
       {[end_of_stream: :output], state}
     end
   end
 
-  @spec resolve_stream_format(struct(), map()) :: {struct(), map()}
+  @spec take_aligned(binary(), State.t()) :: {binary(), binary()}
+  defp take_aligned(payload, state) do
+    unit = state.chunk_size || state.frame_size
+    leftover_size = rem(byte_size(payload), unit)
+    aligned_size = byte_size(payload) - leftover_size
+
+    <<aligned::binary-size(^aligned_size), leftover::binary-size(^leftover_size)>> = payload
+    {aligned, leftover}
+  end
+
+  # When passing pts through (not overwriting), the timestamp of the buffer that starts
+  # a run must be remembered so it ends up in the output buffer
+  @spec remember_run_start(State.t(), Buffer.t(), boolean()) :: State.t()
+  defp remember_run_start(%State{overwrite_pts?: false} = state, %Buffer{pts: pts}, true),
+    do: %{state | next_pts: pts}
+
+  defp remember_run_start(state, _buffer, _fresh_run?), do: state
+
+  @spec passthrough(Buffer.t(), binary(), State.t()) :: {Buffer.t(), State.t()}
+  defp passthrough(buffer, aligned, %State{overwrite_pts?: false} = state),
+    do: {%{buffer | payload: aligned}, state}
+
+  defp passthrough(buffer, aligned, %State{overwrite_pts?: true} = state) do
+    duration = aligned |> byte_size() |> RawAudio.bytes_to_time(state.stream_format)
+
+    {%{buffer | payload: aligned, pts: state.next_pts},
+     %{state | next_pts: state.next_pts + duration}}
+  end
+
+  @spec build_chunks(binary(), Buffer.t(), boolean(), State.t()) :: {[Buffer.t()], State.t()}
+  defp build_chunks(aligned, buffer, fresh_run?, state) do
+    chunks =
+      aligned
+      |> split_into_chunks(state.chunk_size)
+      |> tag_metadata(buffer.metadata, fresh_run?, state)
+
+    {chunks, state} = stamp_pts(chunks, buffer.pts, fresh_run?, state)
+    {chunks, %{state | last_metadata: buffer.metadata}}
+  end
+
+  @spec split_into_chunks(binary(), pos_integer()) :: [Buffer.t()]
+  defp split_into_chunks(<<>>, _chunk_size), do: []
+
+  defp split_into_chunks(payload, chunk_size) do
+    <<chunk::binary-size(^chunk_size), rest::binary>> = payload
+    [%Buffer{payload: chunk} | split_into_chunks(rest, chunk_size)]
+  end
+
+  # The first chunk of a batch inherits the metadata of the input buffer that owns its
+  # leading bytes: the current buffer when the batch starts a fresh run, otherwise the
+  # previous input buffer (whose leftover bytes spilled over into this batch).
+  @spec tag_metadata([Buffer.t()], Buffer.metadata(), boolean(), State.t()) :: [Buffer.t()]
+  defp tag_metadata([first | rest], input_metadata, fresh_run?, state) do
+    first_metadata = if fresh_run?, do: input_metadata, else: state.last_metadata
+
+    rest =
+      case state.metadata_placement_strategy do
+        :first_buffer_only -> rest
+        :repeat_in_chunks -> Enum.map(rest, &%{&1 | metadata: input_metadata})
+      end
+
+    [%{first | metadata: first_metadata} | rest]
+  end
+
+  # Assigns monotonically increasing pts to the chunks, starting from the timestamp the
+  # first chunk should carry. When pts is unknown (nil) chunks are emitted without one.
+  @spec stamp_pts([Buffer.t()], Membrane.Time.t() | nil, boolean(), State.t()) ::
+          {[Buffer.t()], State.t()}
+  defp stamp_pts(chunks, input_pts, fresh_run?, state) do
+    start_pts =
+      cond do
+        # In overwrite mode pts are generated, in a continuation we keep counting from
+        # the run's start; only a fresh passthrough run takes the input buffer's pts.
+        state.overwrite_pts? or not fresh_run? -> state.next_pts
+        true -> input_pts
+      end
+
+    case start_pts do
+      nil ->
+        {chunks, state}
+
+      _pts ->
+        chunks =
+          chunks
+          |> Enum.with_index()
+          |> Enum.map(fn {chunk, index} ->
+            %{chunk | pts: start_pts + index * state.chunk_duration}
+          end)
+
+        next_pts = start_pts + length(chunks) * state.chunk_duration
+        {chunks, %{state | next_pts: next_pts}}
+    end
+  end
+
+  @spec resolve_stream_format(RawAudio.t() | RemoteStream.t(), State.t()) ::
+          {RawAudio.t(), State.t()}
   defp resolve_stream_format(input_stream_format, state) do
     case {input_stream_format, state.stream_format} do
       {%RemoteStream{}, nil} ->
@@ -205,91 +298,5 @@ defmodule Membrane.RawAudioParser do
         Stream format on input pad: #{inspect(input_stream_format)} is different than the one passed in option: #{inspect(state.stream_format)}
         """
     end
-  end
-
-  @spec chunk_buffers(binary(), Membrane.Time.t() | nil, map(), boolean(), map()) ::
-          {[Membrane.Element.Action.t()], map()}
-  defp chunk_buffers(
-         aligned_payload,
-         input_pts,
-         input_metadata,
-         acc_empty?,
-         %{
-           chunk_size: chunk_size,
-           chunk_duration: chunk_duration,
-           overwrite_pts?: overwrite_pts?,
-           metadata_placement_strategy: mps,
-           next_pts: next_pts,
-           last_metadata: last_metadata
-         } =
-           state
-       ) do
-    buffers =
-      aligned_payload
-      |> chunk_payload(chunk_size)
-      |> Enum.map(&%Membrane.Buffer{payload: &1})
-      |> write_metadata(last_metadata, input_metadata, acc_empty?, mps)
-
-    init_pts =
-      if overwrite_pts? or not acc_empty? do
-        next_pts
-      else
-        input_pts
-      end
-
-    {buffers, state} =
-      case init_pts do
-        nil ->
-          {buffers, state}
-
-        _init_pts ->
-          buffers = write_pts(buffers, init_pts, chunk_duration)
-          state = %{state | next_pts: init_pts + chunk_duration * length(buffers)}
-          {buffers, state}
-      end
-
-    {[buffer: {:output, buffers}], %{state | last_metadata: input_metadata}}
-  end
-
-  @spec write_pts([Membrane.Buffer.t()], Membrane.Time.t(), Membrane.Time.t()) :: [
-          Membrane.Buffer.t()
-        ]
-  defp write_pts(buffers, init_pts, chunk_duration) do
-    timestamps = Stream.iterate(init_pts, fn pts -> pts + chunk_duration end)
-
-    Enum.zip_with(buffers, timestamps, fn %Membrane.Buffer{} = buffer, pts ->
-      %{buffer | pts: pts}
-    end)
-  end
-
-  @spec write_metadata(
-          buffers :: [
-            Membrane.Buffer.t()
-          ],
-          last_metadata :: map(),
-          input_metadata :: map(),
-          acc_empty? :: boolean(),
-          placement_strategy :: :first_buffer_only | :repeat_in_chunks
-        ) :: [Membrane.Buffer.t()]
-  defp write_metadata([first | rest], last_metadata, _input_metadata, false, :first_buffer_only),
-    do: [%{first | metadata: last_metadata} | rest]
-
-  defp write_metadata([first | rest], _last_metadata, input_metadata, true, :first_buffer_only),
-    do: [%{first | metadata: input_metadata} | rest]
-
-  defp write_metadata([first | rest], last_metadata, input_metadata, false, :repeat_in_chunks) do
-    first = %{first | metadata: last_metadata}
-    rest = Enum.map(rest, fn buffer -> %{buffer | metadata: input_metadata} end)
-    [first | rest]
-  end
-
-  defp write_metadata(buffers, _last_metadata, input_metadata, true, :repeat_in_chunks),
-    do: Enum.map(buffers, fn buffer -> %{buffer | metadata: input_metadata} end)
-
-  @spec chunk_payload(binary(), nil | pos_integer()) :: [binary()]
-  defp chunk_payload(payload, nil), do: [payload]
-
-  defp chunk_payload(payload, chunk_size) do
-    for <<chunk::size(^chunk_size * 8) <- payload>>, do: <<chunk::size(chunk_size * 8)>>
   end
 end

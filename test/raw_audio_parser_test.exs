@@ -269,9 +269,38 @@ defmodule RawAudioParserTest do
 
       refute_sink_buffer(pipeline, :sink, _buffer, 0)
     end
+
+    test "parser tags only the first chunk of each input buffer with metadata by default" do
+      chunk_duration = Time.milliseconds(10)
+
+      # Each 30 ms input buffer is split into three 10 ms chunks. With the default
+      # `:first_buffer_only` strategy only the first chunk of each batch keeps the input
+      # metadata; the remaining chunks are emitted with empty metadata.
+      pipeline =
+        run_test_pipeline(
+          %RawAudioParser{chunk_duration: chunk_duration, overwrite_pts?: true},
+          3,
+          Time.milliseconds(30)
+        )
+
+      chunk = RawAudio.silence(@stream_format, chunk_duration)
+
+      for i <- 0..8 do
+        pts = i * chunk_duration
+        metadata = if rem(i, 3) == 0, do: %{index: div(i, 3)}, else: %{}
+
+        assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{
+          payload: ^chunk,
+          pts: ^pts,
+          metadata: ^metadata
+        })
+      end
+
+      refute_sink_buffer(pipeline, :sink, _buffer, 0)
+    end
   end
 
-  test "parser copies TODO" do
+  test "parser repeats metadata across chunks and carries previous metadata into straddling chunks" do
     chunk_duration = Time.milliseconds(20)
 
     pipeline =
@@ -308,6 +337,26 @@ defmodule RawAudioParserTest do
       metadata: ^metadata
     })
 
+    refute_sink_buffer(pipeline, :sink, _buffer, 0)
+  end
+
+  test "parser drops a trailing remainder smaller than one sample at end of stream" do
+    chunk_duration = Time.milliseconds(10)
+
+    # 10 ms of audio is a whole number of chunks; the extra 3 bytes are less than one
+    # frame (6 bytes for stereo s24le), so they can't be flushed and must be dropped.
+    silence = @silence_10ms
+    payload = silence <> <<0, 0, 0>>
+
+    spec = [
+      child(:source, %Source{output: [payload], stream_format: @stream_format})
+      |> child(:parser, %RawAudioParser{chunk_duration: chunk_duration})
+      |> child(:sink, Sink)
+    ]
+
+    assert pipeline = Pipeline.start_link_supervised!(spec: spec)
+    assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^silence})
+    assert_end_of_stream(pipeline, :sink)
     refute_sink_buffer(pipeline, :sink, _buffer, 0)
   end
 
