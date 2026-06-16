@@ -155,12 +155,16 @@ defmodule Membrane.RawAudioParser do
   @impl true
   def handle_end_of_stream(:input, _ctx, state) do
     remainder = %Buffer{payload: state.acc, pts: state.next_pts}
-    next_pts = case state.next_pts do
-      nil -> nil
-      pts ->
-        duration = state.acc |> byte_size() |> RawAudio.bytes_to_time(state.stream_format)
-        pts + duration
-    end
+
+    next_pts =
+      case state.next_pts do
+        nil ->
+          nil
+
+        pts ->
+          duration = state.acc |> byte_size() |> RawAudio.bytes_to_time(state.stream_format)
+          pts + duration
+      end
 
     {[buffer: {:output, remainder}, end_of_stream: :output],
      %{state | acc: <<>>, next_pts: next_pts}}
