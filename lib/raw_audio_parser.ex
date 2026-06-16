@@ -49,19 +49,6 @@ defmodule Membrane.RawAudioParser do
                 and otherwise passes them through unchanged.
                 """,
                 default: nil
-              ],
-              metadata_placement_strategy: [
-                spec: :first_buffer_only | :repeat_in_chunks,
-                description: """
-                Controls how the metadata of an input buffer is propagated to the chunks
-                produced from it. Only relevant when `chunk_duration` is set.
-
-                - `:first_buffer_only` - within a single emitted batch only the
-                  first chunk carries metadata; the remaining chunks have empty metadata.
-                - `:repeat_in_chunks` - every produced chunk carries the metadata of the
-                  input buffer it originates from.
-                """,
-                default: :first_buffer_only
               ]
 
   def_input_pad :input,
@@ -86,7 +73,6 @@ defmodule Membrane.RawAudioParser do
             overwrite_pts?: boolean(),
             pts_offset: non_neg_integer(),
             chunk_duration: Membrane.Time.t() | nil,
-            metadata_placement_strategy: :first_buffer_only | :repeat_in_chunks,
             # The pts the next emitted output buffer should carry
             # (generated in overwrite mode, or remembered from the input in passthrough mode).
             # May be `nil` until the first timestamp is known.
@@ -95,10 +81,7 @@ defmodule Membrane.RawAudioParser do
             # carried to the next buffer.
             acc: binary(),
             frame_size: pos_integer() | nil,
-            chunk_size: pos_integer() | nil,
-            # Metadata of the most recently emitted input buffer, used to tag chunks that
-            # start with leftover bytes from the previous input buffer.
-            last_metadata: Buffer.metadata()
+            chunk_size: pos_integer() | nil
           }
 
     defstruct [
@@ -106,12 +89,10 @@ defmodule Membrane.RawAudioParser do
       :overwrite_pts?,
       :pts_offset,
       :chunk_duration,
-      :metadata_placement_strategy,
       :next_pts,
       :frame_size,
       :chunk_size,
-      acc: <<>>,
-      last_metadata: %{}
+      acc: <<>>
     ]
   end
 
@@ -122,7 +103,6 @@ defmodule Membrane.RawAudioParser do
       overwrite_pts?: options.overwrite_pts?,
       pts_offset: options.pts_offset,
       chunk_duration: options.chunk_duration,
-      metadata_placement_strategy: options.metadata_placement_strategy,
       next_pts: options.pts_offset
     }
 
@@ -174,8 +154,16 @@ defmodule Membrane.RawAudioParser do
 
   @impl true
   def handle_end_of_stream(:input, _ctx, state) do
-    remainder = %Buffer{payload: state.acc, pts: state.next_pts, metadata: state.last_metadata}
-    {[buffer: {:output, remainder}, end_of_stream: :output], %{state | acc: <<>>}}
+    remainder = %Buffer{payload: state.acc, pts: state.next_pts}
+    next_pts = case state.next_pts do
+      nil -> nil
+      pts ->
+        duration = state.acc |> byte_size() |> RawAudio.bytes_to_time(state.stream_format)
+        pts + duration
+    end
+
+    {[buffer: {:output, remainder}, end_of_stream: :output],
+     %{state | acc: <<>>, next_pts: next_pts}}
   end
 
   @spec take_aligned(binary(), State.t()) :: {binary(), binary()}
@@ -209,34 +197,15 @@ defmodule Membrane.RawAudioParser do
 
   @spec build_chunks(binary(), Buffer.t(), boolean(), State.t()) :: {[Buffer.t()], State.t()}
   defp build_chunks(aligned, buffer, fresh_run?, state) do
-    chunks =
-      aligned
-      |> split_into_chunks(state.chunk_size)
-      |> tag_metadata(buffer.metadata, fresh_run?, state)
+    chunks = split_into_chunks(aligned, state.chunk_size)
 
     {chunks, state} = stamp_pts(chunks, buffer.pts, fresh_run?, state)
-    {chunks, %{state | last_metadata: buffer.metadata}}
+    {chunks, state}
   end
 
   @spec split_into_chunks(binary(), pos_integer()) :: [Buffer.t()]
   defp split_into_chunks(payload, chunk_size) do
     for <<chunk::binary-size(^chunk_size) <- payload>>, do: %Buffer{payload: chunk}
-  end
-
-  # The first chunk of a batch inherits the metadata of the input buffer that owns its
-  # leading bytes: the current buffer when the batch starts a fresh run, otherwise the
-  # previous input buffer (whose leftover bytes spilled over into this batch).
-  @spec tag_metadata([Buffer.t()], Buffer.metadata(), boolean(), State.t()) :: [Buffer.t()]
-  defp tag_metadata([first | rest], input_metadata, fresh_run?, state) do
-    first = %{first | metadata: if(fresh_run?, do: input_metadata, else: state.last_metadata)}
-
-    rest =
-      case state.metadata_placement_strategy do
-        :first_buffer_only -> rest
-        :repeat_in_chunks -> Enum.map(rest, &%{&1 | metadata: input_metadata})
-      end
-
-    [first | rest]
   end
 
   @spec stamp_pts([Buffer.t()], Membrane.Time.t() | nil, boolean(), State.t()) ::

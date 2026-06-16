@@ -219,179 +219,122 @@ defmodule RawAudioParserTest do
     end
 
     test "parser flushes the sub-chunk remainder at end of stream" do
+      offset = 10
       chunk_duration = Time.milliseconds(30)
 
       pipeline =
         run_test_pipeline(
           %RawAudioParser{chunk_duration: chunk_duration},
           10,
-          Time.milliseconds(10)
+          Time.milliseconds(10),
+          offset
         )
 
       chunk = RawAudio.silence(@stream_format, chunk_duration)
       remainder = RawAudio.silence(@stream_format, Time.milliseconds(10))
 
-      for _i <- 1..3,
-          do: assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^chunk})
+      for i <- 0..2 do
+        pts = i * chunk_duration + offset
+        assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^chunk, pts: ^pts})
+      end
 
       assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^remainder})
       refute_sink_buffer(pipeline, :sink, _buffer, 0)
     end
 
-    test "parser copies metadata between chunks of split buffers" do
-      chunk_duration = Time.milliseconds(10)
+    test "parser splits input buffers into chunks" do
+      chunk_duration = Time.milliseconds(20)
 
       pipeline =
         run_test_pipeline(
           %RawAudioParser{
             chunk_duration: chunk_duration,
-            overwrite_pts?: true,
-            metadata_placement_strategy: :repeat_in_chunks
+            overwrite_pts?: true
           },
           5,
-          Time.milliseconds(20)
-        )
-
-      chunk = RawAudio.silence(@stream_format, chunk_duration)
-
-      for i <- 0..9 do
-        pts = i * chunk_duration
-        metadata = %{index: div(i, 2)}
-
-        assert_sink_buffer(pipeline, :sink, %Buffer{
-          payload: ^chunk,
-          pts: ^pts,
-          metadata: ^metadata
-        })
-      end
-
-      refute_sink_buffer(pipeline, :sink, _buffer, 0)
-    end
-
-    test "parser tags only the first chunk of each input buffer with metadata by default" do
-      chunk_duration = Time.milliseconds(10)
-
-      pipeline =
-        run_test_pipeline(
-          %RawAudioParser{chunk_duration: chunk_duration, overwrite_pts?: true},
-          3,
           Time.milliseconds(30)
         )
 
       chunk = RawAudio.silence(@stream_format, chunk_duration)
 
-      for i <- 0..8 do
+      for i <- 0..6 do
         pts = i * chunk_duration
-        metadata = if rem(i, 3) == 0, do: %{index: div(i, 3)}, else: %{}
 
         assert_sink_buffer(pipeline, :sink, %Buffer{
           payload: ^chunk,
-          pts: ^pts,
-          metadata: ^metadata
+          pts: ^pts
         })
       end
 
-      refute_sink_buffer(pipeline, :sink, _buffer, 0)
-    end
-  end
-
-  test "parser splits input buffers into chunks and carries over metadata with :repeat_in_chunks strategy" do
-    chunk_duration = Time.milliseconds(20)
-
-    pipeline =
-      run_test_pipeline(
-        %RawAudioParser{
-          chunk_duration: chunk_duration,
-          overwrite_pts?: true,
-          metadata_placement_strategy: :repeat_in_chunks
-        },
-        5,
-        Time.milliseconds(30)
-      )
-
-    chunk = RawAudio.silence(@stream_format, chunk_duration)
-
-    for i <- 0..6 do
-      pts = i * chunk_duration
-      metadata = %{index: div(2 * i, 3)}
+      pts = 7 * chunk_duration
+      chunk = RawAudio.silence(@stream_format, Time.milliseconds(10))
 
       assert_sink_buffer(pipeline, :sink, %Buffer{
         payload: ^chunk,
-        pts: ^pts,
-        metadata: ^metadata
+        pts: ^pts
       })
+
+      refute_sink_buffer(pipeline, :sink, _buffer, 0)
     end
 
-    pts = 7 * chunk_duration
-    metadata = %{index: 4}
-    chunk = RawAudio.silence(@stream_format, Time.milliseconds(10))
+    test "parser drops a trailing remainder smaller than one sample at end of stream" do
+      chunk_duration = Time.milliseconds(10)
+      silence = @silence_10ms
+      payload = silence <> <<0, 0, 0>>
 
-    assert_sink_buffer(pipeline, :sink, %Buffer{
-      payload: ^chunk,
-      pts: ^pts,
-      metadata: ^metadata
-    })
+      spec = [
+        child(:source, %Source{output: [payload], stream_format: @stream_format})
+        |> child(:parser, %RawAudioParser{chunk_duration: chunk_duration})
+        |> child(:sink, Sink)
+      ]
 
-    refute_sink_buffer(pipeline, :sink, _buffer, 0)
-  end
+      assert pipeline = Pipeline.start_link_supervised!(spec: spec)
+      assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^silence})
+      assert_end_of_stream(pipeline, :sink)
+      refute_sink_buffer(pipeline, :sink, _buffer, 0)
+    end
 
-  test "parser drops a trailing remainder smaller than one sample at end of stream" do
-    chunk_duration = Time.milliseconds(10)
-    silence = @silence_10ms
-    payload = silence <> <<0, 0, 0>>
+    test "parser divides payloads into samples" do
+      payload_bytes = div(byte_size(@silence_10ms), 2)
+      <<payload::binary-size(^payload_bytes), _rest::binary>> = @silence_10ms
 
-    spec = [
-      child(:source, %Source{output: [payload], stream_format: @stream_format})
-      |> child(:parser, %RawAudioParser{chunk_duration: chunk_duration})
-      |> child(:sink, Sink)
-    ]
+      buffers = for _i <- 1..9, do: payload
 
-    assert pipeline = Pipeline.start_link_supervised!(spec: spec)
-    assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^silence})
-    assert_end_of_stream(pipeline, :sink)
-    refute_sink_buffer(pipeline, :sink, _buffer, 0)
-  end
+      spec = [
+        child(:source, %Source{output: buffers, stream_format: @stream_format})
+        |> child(:parser, RawAudioParser)
+        |> child(:sink, Sink)
+      ]
 
-  test "parser divides payloads into samples" do
-    payload_bytes = div(byte_size(@silence_10ms), 2)
-    <<payload::binary-size(^payload_bytes), _rest::binary>> = @silence_10ms
+      assert pipeline = Pipeline.start_link_supervised!(spec: spec)
+      assert_end_of_stream(pipeline, :sink)
 
-    buffers = for _i <- 1..9, do: payload
+      silence_duration = @silence_10ms |> byte_size() |> RawAudio.bytes_to_time(@stream_format)
+      extended_payload = RawAudio.silence(@stream_format, div(silence_duration, 2))
 
-    spec = [
-      child(:source, %Source{output: buffers, stream_format: @stream_format})
-      |> child(:parser, RawAudioParser)
-      |> child(:sink, Sink)
-    ]
+      <<^extended_payload::binary-size(byte_size(^extended_payload)), truncated_payload::binary>> =
+        @silence_10ms
 
-    assert pipeline = Pipeline.start_link_supervised!(spec: spec)
-    assert_end_of_stream(pipeline, :sink)
+      # Each buffer that Parser gets has some amount of whole samples and half of the sample at the end.
+      # Half of the buffers should be truncated
+      # and half of them will be extended by truncated part from the previous buffer.
+      # This is because Parser ensures that all buffers have only whole samples.
+      for _i <- 1..5,
+          do: assert_sink_buffer(pipeline, :sink, %Buffer{pts: nil, payload: ^truncated_payload})
 
-    silence_duration = @silence_10ms |> byte_size() |> RawAudio.bytes_to_time(@stream_format)
-    extended_payload = RawAudio.silence(@stream_format, div(silence_duration, 2))
+      for _i <- 1..4,
+          do: assert_sink_buffer(pipeline, :sink, %Buffer{pts: nil, payload: ^extended_payload})
+    end
 
-    <<^extended_payload::binary-size(byte_size(^extended_payload)), truncated_payload::binary>> =
-      @silence_10ms
+    test "parser can have `RemoteStream` as input" do
+      spec = [
+        child(:source, %Membrane.File.Source{location: "test/fixtures/beep.raw"})
+        |> child(:parser, %RawAudioParser{stream_format: @stream_format})
+        |> child(:sink, Sink)
+      ]
 
-    # Each buffer that Parser gets has some amount of whole samples and half of the sample at the end.
-    # Half of the buffers should be truncated
-    # and half of them will be extended by truncated part from the previous buffer.
-    # This is because Parser ensures that all buffers have only whole samples.
-    for _i <- 1..5,
-        do: assert_sink_buffer(pipeline, :sink, %Buffer{pts: nil, payload: ^truncated_payload})
-
-    for _i <- 1..4,
-        do: assert_sink_buffer(pipeline, :sink, %Buffer{pts: nil, payload: ^extended_payload})
-  end
-
-  test "parser can have `RemoteStream` as input" do
-    spec = [
-      child(:source, %Membrane.File.Source{location: "test/fixtures/beep.raw"})
-      |> child(:parser, %RawAudioParser{stream_format: @stream_format})
-      |> child(:sink, Sink)
-    ]
-
-    assert pipeline = Pipeline.start_link_supervised!(spec: spec)
-    assert_end_of_stream(pipeline, :sink)
+      assert pipeline = Pipeline.start_link_supervised!(spec: spec)
+      assert_end_of_stream(pipeline, :sink)
+    end
   end
 end
