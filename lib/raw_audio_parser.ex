@@ -18,6 +18,8 @@ defmodule Membrane.RawAudioParser do
                 spec: RawAudio.t() | nil,
                 description: """
                 Defines a raw audio format of the input pad.
+                When `nil`, the parser uses the stream format received from upstream,
+                and expects it to be a proper `Membrane.RawAudio` instance.
                 """,
                 default: nil
               ],
@@ -25,6 +27,7 @@ defmodule Membrane.RawAudioParser do
                 spec: boolean(),
                 description: """
                 If set to true, RawAudioParser will add timestamps based on payload duration.
+                The first buffer's timestamp value can be specified with the `pts_offset` option and defaults to 0.
                 """,
                 default: false
               ],
