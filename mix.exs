@@ -1,7 +1,7 @@
 defmodule Membrane.RawAudioParser.Mixfile do
   use Mix.Project
 
-  @version "0.4.1"
+  @version "0.4.2"
   @github_url "https://github.com/membraneframework/membrane_raw_audio_parser_plugin"
 
   def project do

@@ -4,7 +4,7 @@
 [![API Docs](https://img.shields.io/badge/api-docs-yellow.svg?style=flat)](https://hexdocs.pm/membrane_raw_audio_parser_plugin)
 [![CircleCI](https://circleci.com/gh/membraneframework/membrane_raw_audio_parser_plugin.svg?style=svg)](https://circleci.com/gh/membraneframework/membrane_raw_audio_parser_plugin)
 
-Plugin providing element for parsing raw audio. 
+Plugin providing element for parsing raw audio.
 It will ensure that buffers contain full samples and can overwrite timestamps additionally.
 
 It is part of [Membrane Multimedia Framework](https://membraneframework.org).
@@ -16,7 +16,7 @@ The package can be installed by adding `membrane_raw_audio_parser_plugin ` to yo
 ```elixir
 def deps do
   [
-    {:membrane_raw_audio_parser_plugin, "~> 0.4.1"}
+    {:membrane_raw_audio_parser_plugin, "~> 0.4.2"}
   ]
 end
 ```
