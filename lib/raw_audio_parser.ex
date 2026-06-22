@@ -130,7 +130,7 @@ defmodule Membrane.RawAudioParser do
   @impl true
   def handle_buffer(:input, %Buffer{payload: payload} = buffer, _ctx, state) do
     fresh_run? = state.acc == <<>>
-    {aligned, leftover} = take_aligned(state.acc <> payload, state)
+    {aligned, leftover} = take_aligned(state.acc <> payload, state.chunk_size || state.frame_size)
     state = %{state | acc: leftover}
 
     cond do
@@ -158,7 +158,8 @@ defmodule Membrane.RawAudioParser do
 
   @impl true
   def handle_end_of_stream(:input, _ctx, state) do
-    remainder = %Buffer{payload: state.acc, pts: state.next_pts}
+    {aligned, leftover} = take_aligned(state.acc, state.frame_size)
+    remainder = %Membrane.Buffer{payload: aligned, pts: state.next_pts}
 
     next_pts =
       case state.next_pts do
@@ -166,17 +167,16 @@ defmodule Membrane.RawAudioParser do
           nil
 
         pts ->
-          duration = state.acc |> byte_size() |> RawAudio.bytes_to_time(state.stream_format)
+          duration = aligned |> byte_size() |> RawAudio.bytes_to_time(state.stream_format)
           pts + duration
       end
 
     {[buffer: {:output, remainder}, end_of_stream: :output],
-     %{state | acc: <<>>, next_pts: next_pts}}
+     %{state | acc: leftover, next_pts: next_pts}}
   end
 
-  @spec take_aligned(binary(), State.t()) :: {binary(), binary()}
-  defp take_aligned(payload, state) do
-    unit = state.chunk_size || state.frame_size
+  @spec take_aligned(binary(), pos_integer()) :: {binary(), binary()}
+  defp take_aligned(payload, unit) do
     leftover_size = rem(byte_size(payload), unit)
     aligned_size = byte_size(payload) - leftover_size
 

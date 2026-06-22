@@ -294,6 +294,29 @@ defmodule RawAudioParserTest do
       refute_sink_buffer(pipeline, :sink, _buffer, 0)
     end
 
+    test "parser re-aligns a multi-sample remainder to whole samples at end of stream" do
+      chunk_duration = Time.milliseconds(10)
+      chunk = RawAudio.silence(@stream_format, chunk_duration)
+
+      whole_frame = <<1, 2, 3, 4, 5, 6>>
+      sub_sample_tail = <<7>>
+
+      payload = chunk <> whole_frame <> sub_sample_tail
+
+      spec = [
+        child(:source, %Source{output: [payload], stream_format: @stream_format})
+        |> child(:parser, %RawAudioParser{chunk_duration: chunk_duration})
+        |> child(:sink, Sink)
+      ]
+
+      assert pipeline = Pipeline.start_link_supervised!(spec: spec)
+      assert_end_of_stream(pipeline, :sink)
+
+      assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^chunk})
+      assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^whole_frame})
+      refute_sink_buffer(pipeline, :sink, _buffer, 0)
+    end
+
     test "parser divides payloads into samples" do
       payload_bytes = div(byte_size(@silence_10ms), 2)
       <<payload::binary-size(^payload_bytes), _rest::binary>> = @silence_10ms
