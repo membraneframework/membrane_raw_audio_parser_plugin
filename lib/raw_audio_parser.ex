@@ -84,26 +84,30 @@ defmodule Membrane.RawAudioParser do
             chunk_size: pos_integer() | nil
           }
 
-    defstruct [
+    @enforce_keys [
       :stream_format,
       :overwrite_pts?,
       :pts_offset,
       :chunk_duration,
-      :next_pts,
-      :frame_size,
-      :chunk_size,
-      acc: <<>>
+      :next_pts
     ]
+
+    defstruct @enforce_keys ++
+                [
+                  :frame_size,
+                  :chunk_size,
+                  acc: <<>>
+                ]
   end
 
   @impl true
-  def handle_init(_ctx, options) do
+  def handle_init(_ctx, opts) do
     state = %State{
-      stream_format: options.stream_format,
-      overwrite_pts?: options.overwrite_pts?,
-      pts_offset: options.pts_offset,
-      chunk_duration: options.chunk_duration,
-      next_pts: options.pts_offset
+      stream_format: opts.stream_format,
+      overwrite_pts?: opts.overwrite_pts?,
+      pts_offset: opts.pts_offset,
+      chunk_duration: opts.chunk_duration,
+      next_pts: opts.pts_offset
     }
 
     {[], state}
