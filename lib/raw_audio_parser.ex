@@ -3,23 +3,24 @@ defmodule Membrane.RawAudioParser do
   This element is responsible for parsing audio in RawAudio format.
   The Parser ensures that output buffers have whole samples.
 
-  By default the parser doesn't ensure that each output buffer holds the same
-  number of samples - it only re-aligns buffers to whole samples. When
-  `chunk_duration` is set, the parser additionally re-chunks the stream so that
-  every output buffer carries exactly `chunk_duration` worth of audio (the very
-  last buffer, flushed at end of stream, may be shorter).
+  By default, the parser doesn't ensure that each output buffer holds
+  the same number of samples, it only re-aligns buffers to whole samples.
+  When `chunk_duration` is set, the parser additionally re-chunks the stream,
+  so that every output buffer carries exactly `chunk_duration` worth of audio.
   """
 
   use Membrane.Filter
 
   alias Membrane.{Buffer, RawAudio, RemoteStream}
 
-  def_options output_stream_format: [
+  def_options assumed_input_stream_format: [
                 spec: RawAudio.t() | nil,
                 description: """
-                Defines a raw audio format of the input pad.
-                When `nil`, the parser uses the stream format received from upstream,
-                and expects it to be a proper `Membrane.RawAudio` instance.
+                The format of the stream to assume if the stream format received
+                on the input pad is `t:Membrane.RemoteStream.t/0`.
+                When `nil`, the format received on the input pad is used.
+                When both formats are instances of `t:Membrane.RawAudio.t/0`,
+                the parser expects them to be identical.
                 """,
                 default: nil
               ],
@@ -36,19 +37,19 @@ defmodule Membrane.RawAudioParser do
                 description: """
                 If set to a value different than 0,
                 RawAudioParser will start timestamps from this offset.
-                Only valid when `overwrite_pts?` is set to true.
+                Only valid when `:overwrite_pts?` is set to true.
                 """,
                 default: 0
               ],
               chunk_duration: [
                 spec: Membrane.Time.t() | nil,
                 description: """
-                When set, output buffers are re-chunked so that each one carries exactly
-                `chunk_duration` worth of audio. Bytes that don't fill a whole chunk are
-                buffered until enough data arrives; the trailing remainder is flushed as a
-                (possibly shorter) buffer at end of stream.
+                When set, output buffers are re-chunked
+                so that each one carries exactly `chunk_duration` worth of audio.
+                Bytes that don't fill a whole chunk are buffered until enough data arrives.
+                The trailing remainder is flushed as a (possibly shorter) buffer at end of stream.
 
-                When `nil` (the default) the parser only re-aligns buffers to whole samples
+                When `nil` (the default), the parser only re-aligns buffers to whole samples
                 and otherwise passes them through unchanged.
                 """,
                 default: nil
@@ -72,7 +73,7 @@ defmodule Membrane.RawAudioParser do
     @moduledoc false
 
     @type t :: %__MODULE__{
-            output_stream_format: RawAudio.t() | nil,
+            assumed_input_stream_format: RawAudio.t() | nil,
             overwrite_pts?: boolean(),
             pts_offset: non_neg_integer(),
             chunk_duration: Membrane.Time.t() | nil,
@@ -88,7 +89,7 @@ defmodule Membrane.RawAudioParser do
           }
 
     @enforce_keys [
-      :output_stream_format,
+      :assumed_input_stream_format,
       :overwrite_pts?,
       :pts_offset,
       :chunk_duration,
@@ -106,7 +107,7 @@ defmodule Membrane.RawAudioParser do
   @impl true
   def handle_init(_ctx, opts) do
     state = %State{
-      output_stream_format: opts.output_stream_format,
+      assumed_input_stream_format: opts.assumed_input_stream_format,
       overwrite_pts?: opts.overwrite_pts?,
       pts_offset: opts.pts_offset,
       chunk_duration: opts.chunk_duration,
@@ -189,7 +190,7 @@ defmodule Membrane.RawAudioParser do
     do: {%{buffer | payload: aligned}, state}
 
   defp passthrough(buffer, aligned, %State{overwrite_pts?: true} = state) do
-    duration = aligned |> byte_size() |> RawAudio.bytes_to_time(state.output_stream_format)
+    duration = aligned |> byte_size() |> RawAudio.bytes_to_time(state.assumed_input_stream_format)
 
     {%{buffer | payload: aligned, pts: state.next_pts},
      %{state | next_pts: state.next_pts + duration}}
@@ -235,14 +236,14 @@ defmodule Membrane.RawAudioParser do
   @spec resolve_stream_format(RawAudio.t() | RemoteStream.t(), State.t()) ::
           {RawAudio.t(), State.t()}
   defp resolve_stream_format(input_stream_format, state) do
-    case {input_stream_format, state.output_stream_format} do
+    case {input_stream_format, state.assumed_input_stream_format} do
       {%RemoteStream{}, nil} ->
         raise """
-        You need to specify `output_stream_format` in options if `Membrane.RemoteStream` will be received on the `:input` pad
+        You need to specify `assumed_input_stream_format` in options if `Membrane.RemoteStream` will be received on the `:input` pad
         """
 
       {_input_format, nil} ->
-        {input_stream_format, %{state | output_stream_format: input_stream_format}}
+        {input_stream_format, %{state | assumed_input_stream_format: input_stream_format}}
 
       {%RemoteStream{}, stream_format} ->
         {stream_format, state}
@@ -252,7 +253,7 @@ defmodule Membrane.RawAudioParser do
 
       _else ->
         raise """
-        Stream format on input pad: #{inspect(input_stream_format)} is different than the one passed in option: #{inspect(state.output_stream_format)}
+        Stream format on input pad: #{inspect(input_stream_format)} is different than the one passed in option: #{inspect(state.assumed_input_stream_format)}
         """
     end
   end

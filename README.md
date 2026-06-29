@@ -40,7 +40,7 @@ defmodule Mixing.Pipeline do
         hackney_opts: [follow_redirect: true]
       })
       |> child({:parser, 1}, %Membrane.RawAudioParser{
-        output_stream_format: %Membrane.RawAudio{
+        assumed_input_stream_format: %Membrane.RawAudio{
           channels: 2,
           sample_format: :s16le,
           sample_rate: 48_000
@@ -55,7 +55,7 @@ defmodule Mixing.Pipeline do
         hackney_opts: [follow_redirect: true]
       })
       |> child({:parser, 2}, %Membrane.RawAudioParser{
-        output_stream_format: %Membrane.RawAudio{
+        assumed_input_stream_format: %Membrane.RawAudio{
           channels: 2,
           sample_format: :s16le,
           sample_rate: 48_000
