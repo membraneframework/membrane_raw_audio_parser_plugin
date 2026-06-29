@@ -61,11 +61,16 @@ defmodule RawAudioParserTest do
       for i <- 0..9 do
         pts = i * buffer_duration
 
-        assert_sink_buffer(pipeline, :sink, %Buffer{
-          pts: ^pts,
-          payload: @silence_10ms,
-          metadata: %{index: ^i}
-        })
+        assert_sink_buffer(
+          pipeline,
+          :sink,
+          %Buffer{
+            pts: ^pts,
+            payload: @silence_10ms,
+            metadata: %{index: ^i}
+          },
+          0
+        )
       end
 
       refute_sink_buffer(pipeline, :sink, _buffer, 0)
@@ -85,11 +90,16 @@ defmodule RawAudioParserTest do
       for i <- 0..9 do
         pts = i * buffer_duration + offset
 
-        assert_sink_buffer(pipeline, :sink, %Buffer{
-          pts: ^pts,
-          payload: @silence_10ms,
-          metadata: %{index: ^i}
-        })
+        assert_sink_buffer(
+          pipeline,
+          :sink,
+          %Buffer{
+            pts: ^pts,
+            payload: @silence_10ms,
+            metadata: %{index: ^i}
+          },
+          0
+        )
       end
 
       refute_sink_buffer(pipeline, :sink, _buffer, 0)
@@ -113,10 +123,15 @@ defmodule RawAudioParserTest do
         offset = 10
         pts = i * chunk_duration + offset
 
-        assert_sink_buffer(pipeline, :sink, %Buffer{
-          pts: ^pts,
-          payload: ^chunk
-        })
+        assert_sink_buffer(
+          pipeline,
+          :sink,
+          %Buffer{
+            pts: ^pts,
+            payload: ^chunk
+          },
+          0
+        )
       end
 
       refute_sink_buffer(pipeline, :sink, _buffer, 0)
@@ -137,10 +152,15 @@ defmodule RawAudioParserTest do
       for i <- 0..1 do
         pts = i * chunk_duration
 
-        assert_sink_buffer(pipeline, :sink, %Buffer{
-          payload: ^chunk,
-          pts: ^pts
-        })
+        assert_sink_buffer(
+          pipeline,
+          :sink,
+          %Buffer{
+            payload: ^chunk,
+            pts: ^pts
+          },
+          0
+        )
       end
 
       refute_sink_buffer(pipeline, :sink, _buffer, 0)
@@ -162,7 +182,7 @@ defmodule RawAudioParserTest do
 
       for i <- 0..4 do
         pts = i * chunk_duration + offset
-        assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^chunk, pts: ^pts})
+        assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^chunk, pts: ^pts}, 0)
       end
 
       refute_sink_buffer(pipeline, :sink, _buffer, 0)
@@ -183,10 +203,15 @@ defmodule RawAudioParserTest do
       for i <- 0..4 do
         pts = i * chunk_duration
 
-        assert_sink_buffer(pipeline, :sink, %Buffer{
-          payload: ^chunk,
-          pts: ^pts
-        })
+        assert_sink_buffer(
+          pipeline,
+          :sink,
+          %Buffer{
+            payload: ^chunk,
+            pts: ^pts
+          },
+          0
+        )
       end
 
       refute_sink_buffer(pipeline, :sink, _buffer, 0)
@@ -209,10 +234,15 @@ defmodule RawAudioParserTest do
       for i <- 0..4 do
         pts = i * chunk_duration + offset
 
-        assert_sink_buffer(pipeline, :sink, %Buffer{
-          payload: ^chunk,
-          pts: ^pts
-        })
+        assert_sink_buffer(
+          pipeline,
+          :sink,
+          %Buffer{
+            payload: ^chunk,
+            pts: ^pts
+          },
+          0
+        )
       end
 
       refute_sink_buffer(pipeline, :sink, _buffer, 0)
@@ -235,10 +265,10 @@ defmodule RawAudioParserTest do
 
       for i <- 0..2 do
         pts = i * chunk_duration + offset
-        assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^chunk, pts: ^pts})
+        assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^chunk, pts: ^pts}, 0)
       end
 
-      assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^remainder})
+      assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^remainder}, 0)
       refute_sink_buffer(pipeline, :sink, _buffer, 0)
     end
 
@@ -260,19 +290,29 @@ defmodule RawAudioParserTest do
       for i <- 0..6 do
         pts = i * chunk_duration
 
-        assert_sink_buffer(pipeline, :sink, %Buffer{
-          payload: ^chunk,
-          pts: ^pts
-        })
+        assert_sink_buffer(
+          pipeline,
+          :sink,
+          %Buffer{
+            payload: ^chunk,
+            pts: ^pts
+          },
+          0
+        )
       end
 
       pts = 7 * chunk_duration
       chunk = RawAudio.silence(@stream_format, Time.milliseconds(10))
 
-      assert_sink_buffer(pipeline, :sink, %Buffer{
-        payload: ^chunk,
-        pts: ^pts
-      })
+      assert_sink_buffer(
+        pipeline,
+        :sink,
+        %Buffer{
+          payload: ^chunk,
+          pts: ^pts
+        },
+        0
+      )
 
       refute_sink_buffer(pipeline, :sink, _buffer, 0)
     end
@@ -312,8 +352,8 @@ defmodule RawAudioParserTest do
       assert pipeline = Pipeline.start_link_supervised!(spec: spec)
       assert_end_of_stream(pipeline, :sink)
 
-      assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^chunk})
-      assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^whole_frame})
+      assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^chunk}, 0)
+      assert_sink_buffer(pipeline, :sink, %Buffer{payload: ^whole_frame}, 0)
       refute_sink_buffer(pipeline, :sink, _buffer, 0)
     end
 
@@ -343,10 +383,12 @@ defmodule RawAudioParserTest do
       # and half of them will be extended by truncated part from the previous buffer.
       # This is because Parser ensures that all buffers have only whole samples.
       for _i <- 1..5,
-          do: assert_sink_buffer(pipeline, :sink, %Buffer{pts: nil, payload: ^truncated_payload})
+          do:
+            assert_sink_buffer(pipeline, :sink, %Buffer{pts: nil, payload: ^truncated_payload}, 0)
 
       for _i <- 1..4,
-          do: assert_sink_buffer(pipeline, :sink, %Buffer{pts: nil, payload: ^extended_payload})
+          do:
+            assert_sink_buffer(pipeline, :sink, %Buffer{pts: nil, payload: ^extended_payload}, 0)
     end
 
     test "parser can have `RemoteStream` as input" do
