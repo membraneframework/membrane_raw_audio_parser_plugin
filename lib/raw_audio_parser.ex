@@ -161,21 +161,10 @@ defmodule Membrane.RawAudioParser do
 
   @impl true
   def handle_end_of_stream(:input, _ctx, state) do
-    {aligned, leftover} = take_aligned(state.acc, state.frame_size)
+    {aligned, _leftover} = take_aligned(state.acc, state.frame_size)
     remainder = %Membrane.Buffer{payload: aligned, pts: state.next_pts}
 
-    next_pts =
-      case state.next_pts do
-        nil ->
-          nil
-
-        pts ->
-          duration = aligned |> byte_size() |> RawAudio.bytes_to_time(state.stream_format)
-          pts + duration
-      end
-
-    {[buffer: {:output, remainder}, end_of_stream: :output],
-     %{state | acc: leftover, next_pts: next_pts}}
+    {[buffer: {:output, remainder}, end_of_stream: :output], state}
   end
 
   @spec take_aligned(binary(), pos_integer()) :: {binary(), binary()}
