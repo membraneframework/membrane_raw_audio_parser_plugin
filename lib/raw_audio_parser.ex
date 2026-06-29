@@ -223,14 +223,11 @@ defmodule Membrane.RawAudioParser do
         {chunks, state}
 
       _pts ->
-        chunks =
-          chunks
-          |> Enum.with_index()
-          |> Enum.map(fn {chunk, index} ->
-            %{chunk | pts: start_pts + index * state.chunk_duration}
+        {chunks, next_pts} =
+          Enum.map_reduce(chunks, start_pts, fn chunk, pts ->
+            {%{chunk | pts: pts}, pts + state.chunk_duration}
           end)
 
-        next_pts = start_pts + length(chunks) * state.chunk_duration
         {chunks, %{state | next_pts: next_pts}}
     end
   end
