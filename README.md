@@ -16,7 +16,7 @@ The package can be installed by adding `membrane_raw_audio_parser_plugin ` to yo
 ```elixir
 def deps do
   [
-    {:membrane_raw_audio_parser_plugin, "~> 0.4.1"}
+    {:membrane_raw_audio_parser_plugin, "~> 0.4.2"}
   ]
 end
 ```
