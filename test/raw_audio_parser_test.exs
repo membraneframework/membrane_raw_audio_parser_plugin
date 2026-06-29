@@ -394,7 +394,7 @@ defmodule RawAudioParserTest do
     test "parser can have `RemoteStream` as input" do
       spec = [
         child(:source, %Membrane.File.Source{location: "test/fixtures/beep.raw"})
-        |> child(:parser, %RawAudioParser{stream_format: @stream_format})
+        |> child(:parser, %RawAudioParser{output_stream_format: @stream_format})
         |> child(:sink, Sink)
       ]
 

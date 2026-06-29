@@ -16,7 +16,7 @@ The package can be installed by adding `membrane_raw_audio_parser_plugin ` to yo
 ```elixir
 def deps do
   [
-    {:membrane_raw_audio_parser_plugin, "~> 0.4.2"}
+    {:membrane_raw_audio_parser_plugin, "~> 0.5.0"}
   ]
 end
 ```
@@ -40,7 +40,7 @@ defmodule Mixing.Pipeline do
         hackney_opts: [follow_redirect: true]
       })
       |> child({:parser, 1}, %Membrane.RawAudioParser{
-        stream_format: %Membrane.RawAudio{
+        output_stream_format: %Membrane.RawAudio{
           channels: 2,
           sample_format: :s16le,
           sample_rate: 48_000
@@ -55,7 +55,7 @@ defmodule Mixing.Pipeline do
         hackney_opts: [follow_redirect: true]
       })
       |> child({:parser, 2}, %Membrane.RawAudioParser{
-        stream_format: %Membrane.RawAudio{
+        output_stream_format: %Membrane.RawAudio{
           channels: 2,
           sample_format: :s16le,
           sample_rate: 48_000

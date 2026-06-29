@@ -14,7 +14,7 @@ defmodule Membrane.RawAudioParser do
 
   alias Membrane.{Buffer, RawAudio, RemoteStream}
 
-  def_options stream_format: [
+  def_options output_stream_format: [
                 spec: RawAudio.t() | nil,
                 description: """
                 Defines a raw audio format of the input pad.
@@ -72,7 +72,7 @@ defmodule Membrane.RawAudioParser do
     @moduledoc false
 
     @type t :: %__MODULE__{
-            stream_format: RawAudio.t() | nil,
+            output_stream_format: RawAudio.t() | nil,
             overwrite_pts?: boolean(),
             pts_offset: non_neg_integer(),
             chunk_duration: Membrane.Time.t() | nil,
@@ -88,7 +88,7 @@ defmodule Membrane.RawAudioParser do
           }
 
     @enforce_keys [
-      :stream_format,
+      :output_stream_format,
       :overwrite_pts?,
       :pts_offset,
       :chunk_duration,
@@ -106,7 +106,7 @@ defmodule Membrane.RawAudioParser do
   @impl true
   def handle_init(_ctx, opts) do
     state = %State{
-      stream_format: opts.stream_format,
+      output_stream_format: opts.output_stream_format,
       overwrite_pts?: opts.overwrite_pts?,
       pts_offset: opts.pts_offset,
       chunk_duration: opts.chunk_duration,
@@ -189,7 +189,7 @@ defmodule Membrane.RawAudioParser do
     do: {%{buffer | payload: aligned}, state}
 
   defp passthrough(buffer, aligned, %State{overwrite_pts?: true} = state) do
-    duration = aligned |> byte_size() |> RawAudio.bytes_to_time(state.stream_format)
+    duration = aligned |> byte_size() |> RawAudio.bytes_to_time(state.output_stream_format)
 
     {%{buffer | payload: aligned, pts: state.next_pts},
      %{state | next_pts: state.next_pts + duration}}
@@ -235,14 +235,14 @@ defmodule Membrane.RawAudioParser do
   @spec resolve_stream_format(RawAudio.t() | RemoteStream.t(), State.t()) ::
           {RawAudio.t(), State.t()}
   defp resolve_stream_format(input_stream_format, state) do
-    case {input_stream_format, state.stream_format} do
+    case {input_stream_format, state.output_stream_format} do
       {%RemoteStream{}, nil} ->
         raise """
-        You need to specify `stream_format` in options if `Membrane.RemoteStream` will be received on the `:input` pad
+        You need to specify `output_stream_format` in options if `Membrane.RemoteStream` will be received on the `:input` pad
         """
 
       {_input_format, nil} ->
-        {input_stream_format, %{state | stream_format: input_stream_format}}
+        {input_stream_format, %{state | output_stream_format: input_stream_format}}
 
       {%RemoteStream{}, stream_format} ->
         {stream_format, state}
@@ -252,7 +252,7 @@ defmodule Membrane.RawAudioParser do
 
       _else ->
         raise """
-        Stream format on input pad: #{inspect(input_stream_format)} is different than the one passed in option: #{inspect(state.stream_format)}
+        Stream format on input pad: #{inspect(input_stream_format)} is different than the one passed in option: #{inspect(state.output_stream_format)}
         """
     end
   end
