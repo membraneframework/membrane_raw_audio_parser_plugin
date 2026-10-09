@@ -1,8 +1,9 @@
 # Membrane Raw Audio Parser Plugin
 
+[![Star Membrane on GitHub ★](https://img.shields.io/github/stars/membraneframework/membrane_core?style=flat&logo=github&label=Star%20Membrane%20on%20GitHub%20%E2%98%85&color=blue)](https://github.com/membraneframework/membrane_core)
 [![Hex.pm](https://img.shields.io/hexpm/v/membrane_raw_audio_parser_plugin.svg)](https://hex.pm/packages/membrane_raw_audio_parser_plugin)
 [![API Docs](https://img.shields.io/badge/api-docs-yellow.svg?style=flat)](https://hexdocs.pm/membrane_raw_audio_parser_plugin)
-[![CircleCI](https://circleci.com/gh/membraneframework/membrane_raw_audio_parser_plugin.svg?style=svg)](https://circleci.com/gh/membraneframework/membrane_raw_audio_parser_plugin)
+[![CI](https://github.com/membraneframework/membrane_raw_audio_parser_plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/membraneframework/membrane_raw_audio_parser_plugin/actions/workflows/ci.yml)
 
 Plugin providing element for parsing raw audio.
 It will ensure that buffers contain full samples and can overwrite timestamps additionally.
